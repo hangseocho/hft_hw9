@@ -1,0 +1,5 @@
+seqlock_bench
+tsan_plain
+tsan_atomic
+*.dSYM/
+.DS_Store
