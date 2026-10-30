@@ -59,7 +59,7 @@ test really can catch a broken implementation.
 | A. no writer | 50.9 cyc · 15.89 ns | 11.0 · 3.44 | **11.0 · 3.44** | 1.00x | **4.6x** |
 | B. 1 update / 1000 cyc | 429.6 · 134.24 | 15.9 · 4.97 | **12.9 · 4.04** | 1.23x | **33x** |
 | C. 1 update / 200 cyc | 352.5 · 110.15 | 27.2 · 8.49 | **20.7 · 6.48** | 1.31x | **17x** |
-| D. back-to-back writer | 378.6 · 118.31 | 585.8 · 183.06 | **380.5 · 118.89** | 1.54x | 1.0x |
+| D. back-to-back writer | 378.6 · 118.31 | 585.8 · 183.06 | **380.5 · 118.89** | — (noise) | 1.0x |
 
 Throughput for v1 is 290.6 / 247.3 / 154.2 / 8.4 Mreads/s in scenarios A / B / C / D.
 
@@ -75,7 +75,7 @@ How to read the scenarios:
 
 - **A/B/C (realistic quote rates).** The seqlock is 4.6x cheaper than `shared_mutex` with
   no writer and 17–33x cheaper with a live writer. A seqlock read is only loads: it never
-  writes shared memory. A `shared_lock`/`unlock` pair is two atomic RMWs on the lock word.
+  writes shared memory. A `shared_lock`/`unlock` pair needs at least two atomic RMWs on the lock's state.
   With a live writer, that lock line also moves between cores on every acquisition, and
   the reader may have to wait while the writer holds the lock.
 - **v0 vs v1 is a small effect on this machine.** The v0 number for A was 11.0 in this run
@@ -108,7 +108,7 @@ Each variant is v0 with exactly **one** change:
 with a seqlock read that only performs loads.** Under a writer publishing every ~1000
 cycles, reader cost fell from **429.6 to 12.9 cycles/op (33x)**, and with no writer from
 50.9 to 11.0 (4.6x). A reader-writer lock forces every reader to *write* the shared lock
-word: two atomic RMWs per read, plus a cache-line transfer whenever the writer has touched
+word: at least two atomic RMWs per read (libc++ builds `shared_mutex` on an internal mutex), plus a cache-line transfer whenever the writer has touched
 the lock. A seqlock reader never writes shared state, so in the common case it costs about
 two loads of a line that is already in its cache, plus a 24-byte copy.
 
@@ -154,7 +154,19 @@ timing-dependent, so the warning appears in some runs and not in others.
    millions of reads, plus a negative control that does catch tears.
 4. **A race-free build.** With `-DSEQLOCK_ATOMIC_PAYLOAD=1`, the payload is stored as
    `std::atomic<uint64_t>` words accessed with `memory_order_relaxed`. This is legal C++
-   with no data race, and TSan reports nothing. On x86-64 and ARM64, relaxed 8-byte
+   with no data race. On x86-64 and ARM64, relaxed 8-byte
    atomic loads and stores compile to the same plain `ldr`/`str` or `mov` instructions,
    so the formally correct version costs nothing. (P1478 proposes `atomic_load_per_byte_memcpy`
    for exactly this use case.)
+
+**Measured on this Mac (Apple clang, `-fsanitize=thread`, `./tsan_* test`):**
+
+| Build | TSan warnings in `SeqLock` | Other warnings | Correctness |
+|---|---|---|---|
+| plain `memcpy` (default) | 4 (`load_payload` vs `store_payload`) | 4 in `NaiveSeqLock` | ALL PASS, torn = 0 |
+| `-DSEQLOCK_ATOMIC_PAYLOAD=1` | **0** | 4 in `NaiveSeqLock` | ALL PASS, torn = 0 |
+
+The 4 remaining warnings in the atomic build all come from `NaiveSeqLock`, the v0 baseline
+kept for comparison. It always uses a plain `memcpy`, so it races by design. TSan flags
+exactly the racy copy and nothing else, and the race disappears once that copy becomes
+relaxed atomics.

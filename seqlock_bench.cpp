@@ -91,7 +91,7 @@ private:
 };
 
 // "Before" version: the first seqlock one typically writes.
-//  - every atomic op is seq_cst (writer's stores become XCHG on x86)
+//  - every atomic op is seq_cst; the writer bumps seq with an RMW (LOCK XADD / LDADDAL)
 //  - no cache-line alignment: seq/payload sit on whatever line the
 //    allocator gives them, next to unrelated hot data
 //  - retry loop spins without PAUSE
@@ -228,7 +228,7 @@ static bool report_test(const char* name, int readers, std::uint64_t writes, boo
 // ---------------------------------------------------------------- benchmark
 struct BenchResult { double cyc_per_op, ns_per_op, mops; };
 
-// One writer (CPU 0) updating every `gap` cycles, one timed reader (CPU 1).
+// One writer updating every `gap` cycles, one timed reader (CPU 0 / 1 when pinning is available).
 // Each run: `ops` reads timed with rdtsc + steady_clock. Median over `runs`.
 template <class Box>
 static BenchResult bench(std::uint64_t gap, int runs, std::uint64_t ops, bool live_writer) {
@@ -324,9 +324,9 @@ int main(int argc, char** argv) {
     std::printf("correctness: %s\n", ok ? "ALL PASS" : "FAILURES");
     if (test_only || !ok) return ok ? 0 : 1;
 
-    std::puts("\n== benchmark: 1 reader (CPU1), median of 51 runs x 200k reads ==");
+    std::puts("\n== benchmark: 1 writer + 1 reader (pinned on Linux only), median of 51 runs x 200k reads ==");
     bench_suite("[A] no writer (uncontended read)", 0, false);
-    bench_suite("[B] live writer, ~1 update / 1000 cycles (~2.8M quotes/s)", 1000, true);
+    bench_suite("[B] live writer, ~1 update / 1000 cycles", 1000, true);
     bench_suite("[C] live writer, ~1 update / 200 cycles", 200, true);
     bench_suite("[D] live writer, back-to-back (worst case)", 0, true);
     return 0;
